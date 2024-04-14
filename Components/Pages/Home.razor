@@ -1,0 +1,163 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using Models
+@using System.Text.Json
+@using System.Text.Json.Serialization
+
+<PageTitle>Home</PageTitle>
+
+<div
+    style="display: flex; flex-direction: column; height: calc(100vh - 100px); max-height: calc(100vh - 100px); min-height: 500px; margin-bottom: 20px;">
+    <div style="border: 1px solid blue; padding: 10px; border-radius: 10px; margin-bottom: 10px;">
+        <h1>Canal CodeTotal</h1>
+        <h3>OpenIA Vision com Blazor</h3>
+    </div>
+    <div style="height: 100%; overflow-y: scroll">
+        <div style="padding: 10px;">
+            @foreach (var item in Questions)
+            {
+                <div>
+                    <img src="@item.ImageUrl" alt="" style="max-width: 300px; object-fit: cover; margin-bottom: 10px;">
+                    <p style="white-space: pre-line;">
+                        <strong>
+                            @item.Question
+                        </strong>
+                    </p>
+                    <p style="white-space: pre-line;">
+                        @item.Answer
+                    </p>
+                </div>
+                <hr>
+            }
+        </div>
+    </div>
+    <div
+        style="border: 1px solid blue; padding: 10px; border-radius: 10px; margin-top: 10px; margin-bottom: 10px; display: flex; flex-direction: column;">
+        <h3>
+            <span>Selecione uma imagem e pergunte algo</span>
+            @if (processing)
+            {
+                <span style="color: brown;"> Aguarde...</span>
+            }
+        </h3>
+        @if (errorMessage != null)
+        {
+            <div>
+                <small style="color: red;">@errorMessage</small>
+            </div>
+        }
+        <div style="display: flex; flex-direction: row; align-items: center;">
+            <div style="display: flex; flex-direction: column; min-width: 350px; align-items: center">
+                <img style="height: 80px; width: 100px; object-fit: cover; margin: 10px;"
+                    src="@(imageBase64 ?? "https://t3.ftcdn.net/jpg/02/48/42/64/360_F_248426448_NVKLywWqArG2ADUxDq6QprtIzsF82dMF.jpg")"
+                    srcset="">
+                <InputFile OnChange="OnChangeImage" accept="image/png; image/jpeg" />
+            </div>
+            <textarea @bind:event="oninput" @bind="question" @onkeydown="OnQuestionEnterAsync"
+                style="height: 100%; margin-right: 10px; flex-grow: 1; border-radius: 10px; padding: 10px;"></textarea>
+        </div>
+    </div>
+</div>
+
+@code {
+
+    private List<VisionModel> Questions = new List<VisionModel>();
+    private string? question;
+    private string? imageBase64;
+    private bool processing;
+    private string? errorMessage;
+
+    private async Task OnQuestionEnterAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            processing = true;
+            errorMessage = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(question) && !string.IsNullOrWhiteSpace(imageBase64))
+                {
+                    question = question?.Trim();
+                    await SendQuestionAsync();
+                }
+                else
+                    question = question?.Trim();
+
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+            }
+            finally
+            {
+                processing = false;
+            }
+        }
+    }
+
+    private async Task OnChangeImage(InputFileChangeEventArgs e)
+    {
+        Console.WriteLine("Imagem enviada");
+        var browserFile = await e.File.RequestImageFileAsync(e.File.ContentType, 300, 300);
+        var ms = new MemoryStream();
+        await browserFile.OpenReadStream().CopyToAsync(ms);
+        var base64 = Convert.ToBase64String(ms.ToArray());
+        var prefix = browserFile.ContentType.Contains("png") ? "data:image/png;base64," : "data:image/jpeg;base64,";
+        imageBase64 = $"{prefix}{base64}";
+    }
+
+    private async Task SendQuestionAsync()
+    {
+        var visionPayload = new VisionPayloadModel
+            {
+                Model = "gpt-4-turbo",
+                Messages = [
+            new PayloadMessage {
+Role = "user",
+Content = [
+new() {
+Type = "text",
+Text = question
+},
+new() {
+Type = "image_url",
+Image_url = new ImageUrl {
+Url = imageBase64
+}
+}
+]
+}
+            ]
+            };
+
+        var jsonSerializerOptions = new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+            };
+
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.Add("Authorization", "Bearer API_KEY");
+        // https://api.openai.com/v1/chat/completions
+        var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", visionPayload,
+        jsonSerializerOptions);
+        var result = await response.Content.ReadAsStringAsync();
+        var visionResult = JsonSerializer.Deserialize<VisionResultModel>(result, jsonSerializerOptions);
+
+        if (visionResult?.Error != null)
+            throw new Exception(visionResult.Error.Message);
+
+        Questions.Add(new VisionModel
+            {
+                Question = question,
+                Answer = visionResult?.Choices?[0].Message?.Content,
+                ImageUrl = imageBase64
+            });
+
+        question = null;
+        imageBase64 = null;
+        Console.WriteLine("Pergunta enviada");
+    }
+
+}
